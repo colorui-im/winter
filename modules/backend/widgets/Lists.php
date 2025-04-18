@@ -1,27 +1,23 @@
-<?php
+<?php namespace Backend\Widgets;
 
-namespace Backend\Widgets;
-
-use Backend\Classes\ListColumn;
-use Backend\Classes\WidgetBase;
-use Backend\Facades\Backend;
-use Backend\Facades\BackendAuth;
-use Backend\Traits\PreferenceMaker;
+use Db;
+use Str;
+use Html;
+use Lang;
+use Backend;
+use DbDongle;
 use Carbon\Carbon;
-use Illuminate\Database\QueryException;
-use Illuminate\Support\Facades\Lang;
-use System\Classes\ImageResizer;
-use System\Classes\MediaLibrary;
-use System\Classes\PluginManager;
-use System\Helpers\DateTime as DateTimeHelper;
-use Winter\Storm\Database\Model;
-use Winter\Storm\Exception\ApplicationException;
 use Winter\Storm\Html\Helper as HtmlHelper;
 use Winter\Storm\Router\Helper as RouterHelper;
-use Winter\Storm\Support\Facades\DB;
-use Winter\Storm\Support\Facades\DbDongle;
-use Winter\Storm\Support\Facades\Html;
-use Winter\Storm\Support\Str;
+use System\Helpers\DateTime as DateTimeHelper;
+use System\Classes\PluginManager;
+use System\Classes\MediaLibrary;
+use System\Classes\ImageResizer;
+use Backend\Classes\ListColumn;
+use Backend\Classes\WidgetBase;
+use Winter\Storm\Database\Model;
+use ApplicationException;
+use BackendAuth;
 
 /**
  * List Widget
@@ -32,7 +28,7 @@ use Winter\Storm\Support\Str;
  */
 class Lists extends WidgetBase
 {
-    use PreferenceMaker;
+    use Backend\Traits\PreferenceMaker;
 
     //
     // Configurable properties
@@ -97,6 +93,7 @@ class Lists extends WidgetBase
      * @var bool Display parent/child relationships in the list.
      */
     public $showTree = false;
+    public $selectStar = true;
 
     /**
      * @var bool Expand the tree nodes by default.
@@ -112,11 +109,6 @@ class Lists extends WidgetBase
      * @var bool Display page numbers with pagination, disable to improve performance.
      */
     public $showPageNumbers = true;
-
-    /**
-     * @var bool Display totals for number columns
-     */
-    public $showTotals = true;
 
     /**
      * @var string Specify a custom view path to override partials used by the list.
@@ -213,7 +205,6 @@ class Lists extends WidgetBase
             'recordOnClick',
             'noRecordsMessage',
             'showPageNumbers',
-            'showTotals',
             'recordsPerPage',
             'perPageOptions',
             'showSorting',
@@ -221,6 +212,7 @@ class Lists extends WidgetBase
             'showCheckboxes',
             'showSetup',
             'showTree',
+            'selectStar',
             'treeExpanded',
             'showPagination',
             'customViewPath',
@@ -268,9 +260,9 @@ class Lists extends WidgetBase
     public function prepareVars()
     {
         $this->vars['cssClasses'] = implode(' ', $this->cssClasses);
-        $this->vars['columns'] = $columns = $this->getVisibleColumns();
+        $this->vars['columns'] = $this->getVisibleColumns();
         $this->vars['columnTotal'] = $this->getTotalColumns();
-        $this->vars['records'] = $records = $this->getRecords();
+        $this->vars['records'] = $this->getRecords();
         $this->vars['noRecordsMessage'] = trans($this->noRecordsMessage);
         $this->vars['showCheckboxes'] = $this->showCheckboxes;
         $this->vars['showSetup'] = $this->showSetup;
@@ -283,69 +275,24 @@ class Lists extends WidgetBase
         $this->vars['treeLevel'] = 0;
 
         if ($this->showPagination) {
-            $this->vars['pageCurrent'] = $records->currentPage();
+            $this->vars['pageCurrent'] = $this->records->currentPage();
             // Store the currently visited page number in the session so the same
             // data can be displayed when the user returns to this list.
             $this->putSession('lastVisitedPage', $this->vars['pageCurrent']);
             if ($this->showPageNumbers) {
-                $this->vars['recordTotal'] = $records->total();
-                $this->vars['pageLast'] = $records->lastPage();
-                $this->vars['pageFrom'] = $records->firstItem();
-                $this->vars['pageTo'] = $records->lastItem();
-            } else {
-                $this->vars['hasMorePages'] = $records->hasMorePages();
+                $this->vars['recordTotal'] = $this->records->total();
+                $this->vars['pageLast'] = $this->records->lastPage();
+                $this->vars['pageFrom'] = $this->records->firstItem();
+                $this->vars['pageTo'] = $this->records->lastItem();
             }
-        } else {
-            $this->vars['recordTotal'] = $records->count();
+            else {
+                $this->vars['hasMorePages'] = $this->records->hasMorePages();
+            }
+        }
+        else {
+            $this->vars['recordTotal'] = $this->records->count();
             $this->vars['pageCurrent'] = 1;
         }
-
-        // Disable showTotals if there are no records to display
-        if (!$records->count()) {
-            $this->showTotals = false;
-        }
-
-        // Initialize sums arrays
-        if ($this->showTotals) {
-            $sums = [];
-            $formats = [];
-            $queryTotals = $this->calculateTotalSums($columns);
-            // Initialize sums to zero for numeric columns
-            foreach ($columns as $column) {
-                if ($column->type === 'number' && $column->summable) {
-                    $sums[$column->columnName] = 0;
-                    $formats[$column->columnName] = $column->format ?? null;
-                }
-            }
-
-            if (empty($sums)) {
-                $this->showTotals = false;
-            } else {
-                // Calculate sums for the current page
-                foreach ($records as $record) {
-                    foreach ($columns as $column) {
-                        if ($column->type === 'number' && $column->summable) {
-                            $value = $this->getColumnValueRaw($record, $column);
-                            if (is_numeric($value)) {
-                                $sums[$column->columnName] += $value;
-                            }
-                        }
-                    }
-                }
-
-                // Process the column values
-                $this->vars['sums'] = collect($sums)->mapWithKeys(function ($sum, $columnName) use ($queryTotals, $formats) {
-                    return [
-                        $columnName => [
-                            'sum' => $sum,
-                            'total' => $queryTotals[$columnName] ?? null,
-                            'format' => $formats[$columnName] ?? null,
-                        ],
-                    ];
-                })->toArray();
-            }
-        }
-        $this->vars['showTotals'] = $this->showTotals;
     }
 
     /**
@@ -416,7 +363,10 @@ class Lists extends WidgetBase
     {
         $query = $this->model->newQuery();
         $primaryTable = $this->model->getTable();
-        $selects = [$primaryTable.'.*'];
+        $selects = [];
+        if ($this->selectStar){
+            $selects[] = $primaryTable.'.*';
+        }
         $joins = [];
         $withs = [];
         $bindings = [];
@@ -445,6 +395,8 @@ class Lists extends WidgetBase
          */
         $primarySearchable = [];
         $relationSearchable = [];
+
+        $columnsToSearch = [];
         if (
             strlen($this->searchTerm) !== 0
             && trim($this->searchTerm) !== ''
@@ -468,7 +420,7 @@ class Lists extends WidgetBase
                 else {
                     $columnName = isset($column->sqlSelect)
                         ? DbDongle::raw($this->parseTableName($column->sqlSelect, $primaryTable))
-                        : DbDongle::cast(DB::getTablePrefix() . $primaryTable . '.' . $column->columnName, 'TEXT');
+                        : DbDongle::cast(Db::getTablePrefix() . $primaryTable . '.' . $column->columnName, 'TEXT');
 
                     $primarySearchable[] = $columnName;
                 }
@@ -581,7 +533,7 @@ class Lists extends WidgetBase
 
                 $joinSql = $joinQuery->toSql();
 
-                $selects[] = DB::raw("(" . $joinSql . ") as " . $alias);
+                $selects[] = Db::raw("(".$joinSql.") as ".$alias);
 
                 /*
                  * If this is a polymorphic relation there will be bindings that need to be added to the query
@@ -657,64 +609,6 @@ class Lists extends WidgetBase
         return $query;
     }
 
-    /**
-     * Calculate the totals for the summable columns
-     */
-    protected function calculateTotalSums(array $columns): array
-    {
-        $sums = [];
-
-        $query = $this->prepareQuery();
-
-        // Build an array of numeric columns to sum
-        $sumColumns = [];
-        foreach ($columns as $column) {
-            if ($column->type === 'number' && $column->summable) {
-                $columnName = $column->columnName;
-                $sumColumns[$columnName] = $column;
-                $sums[$columnName] = 0;
-            }
-        }
-
-        if (empty($sums)) {
-            return [];
-        }
-
-        // Modify the query to select the sums
-        $query->getQuery()->columns = [];
-
-        foreach ($sumColumns as $alias => $column) {
-            // Handle columns with custom select
-            if (isset($column->sqlSelect)) {
-                $sqlSelect = $column->sqlSelect;
-                $sumExpression = "SUM({$sqlSelect}) as {$alias}";
-                $query->addSelect(DB::raw($sumExpression));
-            } else {
-                $columnName = $column->columnName;
-                $sumExpression = "SUM({$columnName}) as {$alias}";
-                $query->addSelect(DB::raw($sumExpression));
-            }
-        }
-
-        // Remove any ordering to optimize performance
-        $query->getQuery()->orders = null;
-
-        // Get the sums
-        try {
-            $result = $query->first();
-        } catch (QueryException $ex) {
-            traceLog("Lists widget: showTotals query totals disabled due to SQL error", $ex);
-            return [];
-        }
-
-        // Assign the sums to the $sums array
-        foreach ($sumColumns as $alias => $column) {
-            $sums[$alias] = $result->$alias ?? 0;
-        }
-
-        return $sums;
-    }
-
     public function prepareModel()
     {
         traceLog('Method ' . __METHOD__ . '() has been deprecated, please use the ' . __CLASS__ . '::prepareQuery() method instead.');
@@ -785,8 +679,11 @@ class Lists extends WidgetBase
         $currentPageNumber = intval($currentPageNumber);
 
         if ($currentPageNumber > 1) {
-            $count = $query->count();
-
+            try {
+                $count = $query->count();
+            } catch (\Exception $ex) {
+                $count = $query->toBase()->getCountForPagination();
+            }
             // If the current page number is higher than the amount of available pages, go to the last available page
             if ($count <= (($currentPageNumber - 1) * $this->recordsPerPage)) {
                 $currentPageNumber = ceil($count / $this->recordsPerPage);
@@ -1258,9 +1155,8 @@ class Lists extends WidgetBase
     {
         $value = $this->getColumnValueRaw($record, $column);
 
-        $customMethod = 'eval'. studly_case($column->type) .'TypeValue';
-        if ($this->methodExists($customMethod)) {
-            $value = $this->{$customMethod}($record, $column, $value);
+        if (method_exists($this, 'eval'. studly_case($column->type) .'TypeValue')) {
+            $value = $this->{'eval'. studly_case($column->type) .'TypeValue'}($record, $column, $value);
         }
         else {
             $value = $this->evalCustomListType($column->type, $record, $column, $value);
@@ -1547,12 +1443,11 @@ class Lists extends WidgetBase
         $options = [
             'defaultValue' => $value,
             'format' => $column->format,
-            'formatAlias' => 'dateLongMin',
-            'ignoreTimezone' => true,
+            'formatAlias' => 'dateLongMin'
         ];
 
-        if (isset($column->config['ignoreTimezone'])) {
-            $options['ignoreTimezone'] = $column->config['ignoreTimezone'];
+        if (!empty($column->config['ignoreTimezone'])) {
+            $options['ignoreTimezone'] = true;
         }
 
         return Backend::dateTime($dateTime, $options);
