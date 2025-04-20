@@ -3,7 +3,6 @@
 use Lang;
 use ApplicationException;
 use Backend\Classes\FormWidgetBase;
-use Winter\Storm\Database\Model;
 
 /**
  * Record Finder
@@ -60,7 +59,7 @@ class RecordFinder extends FormWidgetBase
     /**
      * @var string Prompt to display if no record is selected.
      */
-    public $prompt = null;
+    public $prompt = 'Click the %s button to find a record';
 
     /**
      * @var int Maximum rows to display for each page.
@@ -143,10 +142,6 @@ class RecordFinder extends FormWidgetBase
             'useRelation',
             'modelClass',
         ]);
-
-        if (!isset($this->prompt)) {
-            $this->prompt = Lang::get('backend::lang.recordfinder.default_prompt');
-        }
 
         if (!$this->useRelation && !class_exists($this->modelClass)) {
             throw new ApplicationException(Lang::get('backend::lang.recordfinder.invalid_model_class', ['modelClass' => $this->modelClass]));
@@ -317,8 +312,10 @@ class RecordFinder extends FormWidgetBase
 
     /**
      * Gets the base model instance used by this field
+     *
+     * @return \Winter\Storm\Database\Model
      */
-    protected function getRecordModel(): Model
+    protected function getRecordModel()
     {
         $model = null;
         if ($this->useRelation) {
@@ -336,6 +333,8 @@ class RecordFinder extends FormWidgetBase
         $config->model = $this->getRecordModel();
         $config->alias = $this->alias . 'List';
         $config->showSetup = false;
+        $config->showTree = $this->getConfig('showTree');
+        $config->treeExpanded = $this->getConfig('treeExpanded');
         $config->showCheckboxes = false;
         $config->recordsPerPage = $this->recordsPerPage;
         $config->recordOnClick = sprintf("$('#%s').recordFinder('updateRecord', this, ':" . $this->keyFrom . "')", $this->getId());
